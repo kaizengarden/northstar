@@ -1,0 +1,196 @@
+#!/usr/perl5/bin/perl
+
+# autoflow: Crossbow Flow Generator for SharedIP Zones
+# benr@cuddletech.com           March 28th, 2010
+# 
+#  Ben Rockwood (c) 2010
+#  License: Simplified BSD
+#
+# REQUIRES SUNWperl-xml-parser Package on snv_121!
+
+#$DEBUG="yes";
+#$DUMP="yes";
+                                
+use warnings;                   
+use XML::Simple;                
+use Data::Dumper;               
+use Getopt::Std;                
+                                
+                                
+# Prototypes:                   
+sub getSharedZones();           
+sub getZoneNetPair($);          
+sub addFlow($$$);               
+sub checkFlow($$$);             
+                                
+                                
+                                
+################# MAIN #########################################
+                                
+my @zones = getSharedZones();   
+                                
+                                
+foreach $zone (@zones)          
+{                               
+                                
+ print("  DEBUG: Working on $zone\n") if ($DEBUG);
+                                
+ my @pairs = getZoneNetPair($zone);
+                                
+ foreach $pair (@pairs)         
+ {                              
+        my ($if, $ip) = split(/:/, $pair);	# For each zone, get the if/ip paring.
+        print("$zone  $if  $ip\n") if ($DEBUG);
+	$ip =~ s/(\/\d+)//;                     # Strip the netmask.
+                                
+                                
+        next if checkFlow($zone, $if, $ip); 	# If checkFlow fails, it already exists.
+
+	next if ($DEBUG); 			# Don't actually create the flows if we're just debugging
+                                
+        if ( addFlow($zone, $if, $ip) ) {
+                print("Flow successfully added.\n");
+        } else {                
+                print("Attempt to create flow  failed.\n");
+        }                       
+ }                              
+}                               
+                                
+                                
+                                
+                                
+                                
+                                
+
+
+
+
+
+
+################# SUBS #########################################
+
+## getSharedZone
+## Desc: Return an array of sharedip running zones
+
+sub getSharedZones()
+{
+
+ # Example Data: 1:splunk:running:/quadra/zones/splunk:6376d7a9-b44c-6d8c-82f7-b6c65342d9b5:ipkg:shared
+ my @zones = `/usr/sbin/zoneadm list -p`;
+ my @sharedZones; 
+ 
+ foreach $zone (@zones) {
+   chomp($zone);
+   my ($id, $name, $state, $path, $uuid, $brand, $iptype) = split(/:/, $zone);
+ 
+   next if $name eq "global";
+  
+   print("  DEBUG: Found zone $name ($id) of type $iptype\n") if ($DEBUG);
+
+   if ( $iptype eq "shared" && $state eq "running" ) {
+        push(@sharedZones, $name);
+   }
+ }
+
+ return(@sharedZones);
+}
+
+## getZoneNetPair
+## Argument: zone name
+## Desc: Given a zone, return interface/ip_addr touple
+
+sub getZoneNetPair($)
+{
+
+ $zone = shift;
+ $zoneXML = "/etc/zones/${zone}.xml";
+ my @netpairs;
+ print("  DEBUG: Processing XML for $zoneXML\n") if ($DEBUG);
+
+
+ $xml = new XML::Simple; 
+ $data = $xml->XMLin($zoneXML, suppressempty => '');
+
+ print "--- DUMP ---\n" if ($DUMP);
+ print Dumper($data) if ($DUMP);
+ print "--- DUMP ---\n" if ($DUMP);
+
+ if ( `grep network $zoneXML | wc -l` ==  1 ) { 
+
+	 foreach my $net ( $data->{network} ) { 
+       		print("  DEBUG: Zone $zone --> Physical is $net->{physical}, Address is $net->{address}\n") if ($DEBUG);
+        
+       		 push(@netpairs, "$net->{physical}:$net->{address}");
+  	 }
+ } else {
+	foreach my $net ( @{$data->{network}} ) { 
+       		print("  DEBUG: Zone $zone --> Physical is $net->{physical}, Address is $net->{address}\n") if ($DEBUG);
+        
+       		push(@netpairs, "$net->{physical}:$net->{address}");
+	}
+	
+
+ }
+
+ return(@netpairs);
+}
+
+## addFlow
+## Given a zone network touple, create a new flow
+
+sub addFlow($$$)
+{
+ my ($zone, $if, $ip) = @_;
+
+ my $flow = flowName($zone, $if, $ip); 
+
+ if ( system("/sbin/flowadm add-flow -l $if -a local_ip=$ip $flow 2>/dev/null >/dev/null") ) 
+ {
+        print("Shit... flow add for $flow failed.\n") if ($DEBUG);
+        return(0);
+ } else {
+        print("Success for $flow!\n") if ($DEBUG);
+	print("$flow: ");
+        return(1);
+ }
+
+}
+
+## checkFlow
+## Look up a given flow to determine whether or not to create it.
+
+sub checkFlow($$$)
+{
+ my ($zone, $if, $ip) = @_;
+
+ my $flow = flowName($zone, $if, $ip); 
+
+ if ( system("/sbin/flowadm show-flow $flow 2>/dev/null >/dev/null") )
+ { 
+        print("Flow ${flow} not found, continue...\n") if ($DEBUG);
+        return(0);
+ } else {
+        print("Flow ${flow} already exists, skipping.\n") if ($DEBUG);
+        return(1);
+ }
+
+} 
+
+
+
+sub flowName($$$)
+{
+ my ($zone, $if, $ip) = @_;
+ my $name;
+
+ if ( $ip =~ m/^10/ || $ip =~ m/^192\.168/) {
+	$name = "${zone}2";	
+	print(" flowName is $name: Private interface for $zone $if $ip\n") if ($DEBUG);
+ } else {
+	$name = "${zone}0";	
+	print(" flowName is $name: Public interface for $zone $if $ip\n") if ($DEBUG);
+ }
+	
+
+ return($name);
+}

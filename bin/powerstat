@@ -1,0 +1,79 @@
+#!/usr/perl5/bin/perl
+## benr@joyent.com      - quiksys proto 3/27/09
+
+
+use strict;
+use Sun::Solaris::Kstat;
+
+my $interval = 10;
+my $ARGS = @ARGV;
+
+
+
+# Parse Args
+
+if($ARGS > 0 && $ARGV[0] =~ m/\d+/) {
+        $interval = $ARGV[0];
+} elsif($ARGS > 0 && $ARGV[0] eq "-h") {
+        die("Usage: $0 <interval>\n");
+} 
+
+
+
+
+
+my $Kstat = Sun::Solaris::Kstat->new();
+
+
+## How many CPU's?
+my $CPUS = ${Kstat}->{unix}->{0}->{system_misc}->{ncpus};
+print(" +Joyent POWERstat: Nehalem Power State Monitoring\n");
+print("                 Found $CPUS threads.\n\n");
+print("CPU    Freq     CSTATE  \n");
+print("----  ------    --------------------------------------------\n");
+
+
+my $counter = 0;
+
+while (1) {
+
+        # $i represents the thread ("CPU") we're looking at:
+        for(my $i = 0; $i < $CPUS; $i++) {
+
+                my $ii = "cpu_info${i}";
+                my $CSTATE = ${Kstat}->{cpu_info}->{$i}->{$ii}->{current_cstate};
+                my $PFREQ  = ${Kstat}->{cpu_info}->{$i}->{$ii}->{current_clock_Hz} / 1000000000;        # Clock in Ghz
+
+                my $CSTATE_STR;
+                if ($CSTATE == 0) {
+                        $CSTATE_STR = "Full Power Mode";
+                } elsif ( $CSTATE == 3 ) {
+                        $CSTATE_STR = "Powered Down";
+                } else {
+                        $CSTATE_STR = "Lower Power Mode";
+                }
+        
+                printf("%2d  %4.2f Ghz  %4s : %20s \n", $i, $PFREQ, $CSTATE, $CSTATE_STR);
+
+        }
+
+        
+        sleep($interval);
+        my $DATE = `date`;
+        chomp($DATE);
+        $Kstat->update();
+        my $POWER = getPower(); 
+        print("\n $DATE : $POWER \n");
+}
+
+
+sub getPower()
+{
+        my $WATTAGE = `ipmitool -I bmc sdr entity 7.1 | grep Watt`;
+        chomp($WATTAGE);
+
+        $WATTAGE =~ s/^.* (\d{3} Watts$)/$1/;           ## Regex must match full line
+                                                         ## but catch part we want.
+
+        return($WATTAGE);
+}

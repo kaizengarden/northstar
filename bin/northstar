@@ -1,0 +1,1605 @@
+#!/usr/perl5/bin/perl
+
+# Project
+ #    #   ####   #####    #####  #    #   ####    #####    ##    #####
+ ##   #  #    #  #    #     #    #    #  #          #     #  #   #    #
+ # #  #  #    #  #    #     #    ######   ####      #    #    #  #    #
+ #  # #  #    #  #####      #    #    #       #     #    ######  #####
+ #   ##  #    #  #   #      #    #    #  #    #     #    #    #  #   #
+ #    #   ####   #    #     #    #    #   ####      #    #    #  #    #
+       #	       #		--> Joyent "Telemeter" <--
+			# benr@joyent  - 3/30/09
+use strict;
+use Sun::Solaris::Kstat;
+
+
+my $Kstat = Sun::Solaris::Kstat->new();
+
+
+## CONFIG:
+my $LOGO = "img/northstar-logo.png";	# Logo should be no more than 350x100px
+my $NSVERSION = "0.6.0";
+
+## GLOBALS:
+my $HOSTNAME = `/usr/bin/hostname`;
+my $TZ = $ENV{'TZ'};
+my $MAKE      = "---";
+my $MODEL     = "---";
+my $BOX_IMAGE = "---";			# Box Image should be no more than 300x100px
+my $SERIAL    = "---";
+my $pagesize = `/usr/bin/pagesize`;
+my $PHYS = 0;
+my $NCPUS = 0;
+my @flows;
+my @links;
+chomp($pagesize);
+
+my $TIME = time();
+my $PRETTY_TIME=localtime($TIME);
+
+## MCP Selection:
+my $MCP_URL =  ( $HOSTNAME =~ m/lv1/ ) ? "https://lv1-mcp.joyent.com/" : "https://mcp.joyent.com";
+ ## TODO: MCP doesn't apply if this is SDC6
+
+# Palette
+# Green 2aff3e   - Red ff2222
+# Key   bcafc4   - Value e7e7e7
+
+
+
+#############################################################################
+## MAIN:
+#############################################################################
+my $VERSION  = `/usr/bin/uname -v`;
+my $BUILD    =  $VERSION;
+$BUILD      =~ s/snv_//;
+my $UPTIME   = `/usr/bin/uptime`;
+my $HOSTID   = `/usr/bin/hostid`;
+($MAKE, $MODEL, $BOX_IMAGE, $SERIAL) = getPhysical();
+my $NOZONES  = 0;
+
+
+## HTML OUTPUT:
+print_header();
+print_corestats();
+
+ print("<center><h1>Global View</h1></center>\n");
+print_netmodule();
+print_cpumodule();
+print_memmodule();
+print_zfsmodule();
+
+print_zoneview() if ( $NOZONES == 0 );
+
+#print_zones();
+
+if ( `/usr/sbin/ipmitool mc info 2>/dev/null | grep "IPMI Version"` ) {
+ print("<hr>");
+ print("<center><h1>Physical View</h1></center>\n");
+ print('<table><tr valign="top"><td width="50%">');
+ print_sel();
+ print('</td><td width="50%">');
+ print_sdr();
+ print('</td></tr></table>');
+} 
+
+
+ print("<hr>");
+ print("<center><h1>Log View</h1></center>\n");
+print_dmesg();
+
+
+
+
+
+## EXIT & CLEANUP:
+print_footer();
+
+
+
+
+
+
+
+
+#############################################################################
+## SUBROUTINES:
+#############################################################################
+
+sub print_header()
+{
+
+print <<END;
+<html>
+
+<head>
+  <title>+JOYENT TELEMETER: ${HOSTNAME}</title>
+  <style type="text/css">
+  body {
+	font-family: Helvetica; 
+  }
+  a {
+	text-decoration: none;
+  }
+  a.host {
+	text-decoration: none;
+	color: black;
+  }
+  a.stealth {
+	text-decoration: none;
+	color: black;
+  }
+  td {
+	font-size: 10px;
+ 	align: top;
+  }
+  h1 { 
+	font: bold 28px Helvetica, sans-serif;
+  }
+  h2 { 
+	font: 22px Helvetica, sans-serif;
+  }
+  h4 {
+	font-size: 14px;
+  }
+  td.v1 {
+	 background-color:      e7e7e7;
+	 text-align:    right;
+  }
+  td.v2 {
+	 text-align:    right;
+  }
+  td.netval {
+	text-align: 	right;
+	width:		40;
+	height:		15;
+  }
+  td.netname {
+	text-align:	right;
+	width:		70;
+	height:		15;
+  }
+  td.good {
+	background-color:	2aff3e;
+	 text-align:    right;
+  }
+  td.bad {
+	background-color:	ff2222;
+	 text-align:    right;
+  }
+  td.warn {
+	background-color:	feff97;
+	 text-align:    right;
+  }
+  </style>
+</head>
+
+<body bgcolor=#a2a2a2 >
+<center>
+<table width=1050 bgcolor="white"><tr><td>
+
+ <table>
+ <tr height=100>
+   <td width=350><img src="${BOX_IMAGE}"></td>
+   <td width=500><center><h1><a href="$MCP_URL/admin/servers/search?search_value=${HOSTNAME}" class="host">${HOSTNAME}</a></h1><h2>${PRETTY_TIME} ${TZ}</h2></center></td>
+   <td width=200 align="right"><img src="${LOGO}"></td>
+ </table>
+END
+
+}
+
+
+sub print_footer()
+{
+
+
+	my $END_TIME = time();
+	my $RUN_TIME = $END_TIME - $TIME; 
+	print("</table>\n");
+	print("<small><i> Northstar v${NSVERSION} (c)2011 - Joyent Systems Engineering</i> Generated in $RUN_TIME seconds. </small><br />\n");
+	print("</body></html>");
+}
+
+
+
+
+sub print_corestats()
+{
+
+### FOUR COLUMN: CPU, MEM, DISK, NET
+print <<END1;
+ <center>
+ <table width=40% border=0>
+ <tr>
+  <td width=250 valign="top">
+  <center><h4>Processor & System</h4>
+END1
+
+## OUTPUT CPU TABLE
+print_cputable();
+
+print <<END2;
+  <center><h4>Memory & Swap</h4>
+END2
+
+## OUTPUT MEM TABLE
+print_memtable();
+
+#print <<END3;
+#  <center><h4>Accelerators</h4>
+#END3
+#
+## OUTPUT NET TABLE
+#print_zonetable();
+
+print <<END4;
+  <center><h4>Storage</h4>
+END4
+
+## OUTPUT DISK TABLE
+print_disktable();
+
+print <<END5;
+  </td>
+  <td valign="top">
+END5
+
+print_quikcaps();
+
+print <<END6
+ </table> 
+</center>
+<br /><hr />
+END6
+}
+
+
+## Get Physical Information; If possible use SMBIOS, otherwise resort to ugly IPMI
+sub getPhysical()
+{
+        my $manID  = "Unknown";
+        my $prodID = "Unknown";
+        my $boxImage = "xxx.jpg";
+
+
+        if ( `/usr/sbin/smbios -t 0 &>/dev/null` )
+        {
+                my $MAKE   = `/usr/sbin/smbios -t 1 | grep Manufacturer`;
+                my $MODEL  = `/usr/sbin/smbios -t 1 | grep Product`;
+                my $SERIAL = `/usr/sbin/smbios -t 1 | grep Serial`;
+                my $IMAGE  = "img/xxx.jpg";
+
+                chomp($MAKE);
+                chomp($MODEL);
+                chomp($SERIAL);
+
+                $MAKE   =~ s/\s+Manufacturer:\s//;
+                $MODEL  =~ s/\s+Product:\s//;
+                $SERIAL =~ s/\s+Serial Number: //;
+                $SERIAL =~ s/\s+//;
+
+                # Select Image:
+                if ( $MODEL =~ m/2950/ ) { $IMAGE = "img/2950.jpg"; }
+                if ( $MODEL =~ m/R510/ ) { $IMAGE = "img/r510.jpg"; }
+                if ( $MODEL =~ m/R710/ ) { $IMAGE = "img/r710.jpg"; }
+                if ( $MODEL =~ m/X4150/ ) { $IMAGE = "img/x4150.jpg"; }
+                if ( $MODEL =~ m/X4100/ ) { $IMAGE = "img/x4100.jpg"; }
+                if ( $MODEL =~ m/Joyent-Compute/ ) { $IMAGE = "img/richmond.jpg"; }
+
+                #print("$MAKE $MODEL - .${SERIAL}.   $IMAGE\n");
+                return($MAKE, $MODEL, $IMAGE, $SERIAL );
+
+        } else {
+                my @ipmiBMCinfo = `/usr/sbin/ipmitool mc info`;
+
+                foreach(@ipmiBMCinfo) {
+                 if ($_ =~ m/Manufacturer ID/){
+                         my $tmp = $_;         
+                         chomp($tmp); 
+                         $tmp =~ s/.*: //;
+                         ($manID) = split(/\s/, $tmp);
+                 }
+                 if ($_ =~ m/Product ID/){
+                         my $tmp = $_;    
+                         chomp($tmp); 
+                         $tmp =~ s/.*: //;
+                         ($prodID) = split(/\s/, $tmp);
+                 }
+                } 
+                 
+                if ($manID == 42){ $manID = "Sun Microsystems"; }
+                if ($manID == 7244){ $manID = "Sun Microsystems"; }
+                if ($manID == 674){ $manID = "Dell"; }
+
+                if ($prodID == 256){ $prodID = "2950"; $boxImage = "img/2950.jpg"; }
+                if ($prodID == 18177) { $prodID = "X4100"; $boxImage = "img/x4100.jpg"; }
+                if ($prodID == 21394) { $prodID = "X4150"; $boxImage = "img/x4150.jpg"; }
+
+                print(" DEBUG:> Make: ${manID}  Model: ${prodID}  Image: ${boxImage}\n");
+
+                return($manID, $prodID, $boxImage);
+        }
+}
+
+
+
+sub print_sel()
+{
+	my @sel = `/usr/sbin/ipmitool sel elist`;
+	if(@sel){
+		print("<h2>System Event Log</h2>");
+	} else {
+		return();
+	}
+	
+	my $count = 0;
+	my $line_color = 0;
+
+	print("<table>\n");
+	foreach(@sel){
+	  next if ( $_ =~ m/Event Logging Disabled/ );
+	  $count++;
+
+	  # 0        1          2               3                     4              5
+	  # 2 | 03/15/2012 | 11:03:23 | Power Supply Status | Failure detected | Asserted 
+	  my @logline = split(/\|/, $_);
+
+          ## Output lines:
+          if ( $line_color == 0 ) {
+                print("<tr bgcolor=bcafc4>");
+                $line_color = 1;
+          } else {
+                print("<tr bgcolor=e7e7e7>");
+                $line_color = 0;
+          }
+	  print("<td>$logline[0]</td><td>$logline[1]</td><td>$logline[2]</td><td>$logline[3]</td>");
+
+
+	  ## Output Line number & color code (easier to read than coloring whole line)
+	  if ( $_ =~ m/Asserted/ ) {	
+		print("<td bgcolor=ff2222 align=center>$logline[4]</td>");
+
+	  } elsif ( $_ =~ m/Deasserted/ ) {
+		print("<td bgcolor=2aff3e align=center>$logline[4]</td>");
+
+	  } else {
+		print("<td align=center>$logline[4]</td>");
+	  }
+          print("<td>$logline[5]</td></tr>\n");
+	}
+	if ( $count == 0 ) { print("<td>Empty</td>"); }
+
+	print("</table><br />\n");
+}
+
+sub print_sdr()
+{
+        my @sdr = `/usr/sbin/ipmitool sdr list | /usr/xpg4/bin/egrep -v ns`;
+        if(@sdr){
+                print("<h2>Sensor Data Repository</h2>");
+        } else {
+                return();
+        }
+
+	my $sdr_size = @sdr;
+	my $column_length = $sdr_size / 3;
+	my $length = 1;
+	
+
+        print("<table>\n<tr>\n <td>\n<table>\n");
+        foreach(@sdr){
+	  $_ =~ s/\|/<\/td><td>/g;
+
+	  if ( $_ =~ m/ok/ ) {
+		print("<tr><td bgcolor=2aff3e align=center>$_</td></tr>\n");
+	  } else {
+		print("<tr><td align=center>$_</td></tr>\n");
+	  }
+	
+	  $length++;
+	  if ( $length > $column_length ) {
+ 	    $length = 1;
+	    printf("</table>\n </td><td>\n <table>") 
+	  } 
+
+        } 
+          
+        print("</table>\n</td></table>\n<br />\n");
+
+}
+
+sub print_dmesg()
+{
+	my @dmesg = `/usr/bin/dmesg`;
+
+	if(@dmesg){
+		print("<h2>System Log (dmesg)</h2>");
+		shift(@dmesg);   # Dump first line
+		shift(@dmesg);   # Dump timestamp
+	} else {
+		return();
+	}
+
+	my $line_color = 0;
+	my $count = 1;
+	print("<table>\n");
+	print("<tr><td><b>Line</b></td><td align=center><b>Message</b></td>\n");
+	
+	foreach(@dmesg){
+		
+		if ( $line_color == 0 ) {
+			print("<tr><td align=center>${count}</td><td bgcolor=bcafc4>$_</td>\n");
+			$line_color = 1;
+			$count++;
+		} else {
+			print("<tr><td align=center>${count}</td><td bgcolor=e7e7e7>$_</td>\n");
+			$line_color = 0;
+			$count++;
+		}
+	}
+	print("</table>\n");
+			
+	
+}
+
+sub print_netmodule()
+{
+        print("<h2>Networking</h2>");
+        print('<table><tr><td><img src="graphs/net.png"></td><td>');
+
+        ## If we're using a post-89 system we can use dladm for data.
+        if ( $BUILD > 87 ) {
+                my @physlinks = `/usr/sbin/dladm show-link -o link,state,class | grep phys`;
+                my @vlans     = `/usr/sbin/dladm show-vlan -o link,vid,over`;
+		my $vlans_count = @vlans;
+		my @vnics;
+		my $vnics_count;
+
+		if ( $BUILD > 120 ) {
+		  @vnics     = `/usr/sbin/dladm show-vnic -o link,vid,over`;
+		  $vnics_count = @vnics;
+ 		} else {
+		  $vnics_count = 0;
+  	        }
+               
+                print("<table width=250>\n");
+                print("<tr height=10><td><b>Physical Interface</b></td><td><b>State</b></td><td><b>IP</b></td></tr>\n");
+                ## Physical Link Table:
+
+                foreach(@physlinks) {
+                        chomp($_);
+                        my @link = split(/\s+/, $_);
+                        my $ip   = &get_linkIP($link[0]);
+                        print("<tr><td bgcolor=bcafc4>$link[0]</td><td>$link[1]</td><td bgcolor=e7e7e7>$ip</td> \n");
+                }
+
+
+                ## VLAN Link Table:
+
+	  if ( $vlans_count == 0 ) {
+		print("<tr height=10><td><b>No VLAN Interfaces</b></td><td><b>-</b></td><td><b>-</b></td></tr>\n");
+	  } else {
+                print("<tr height=10><td><b>VLAN Interface</b></td><td><b>Physical Link</b></td><td><b>Tag</b></td></tr>\n");
+                foreach(@vlans) {
+                        chomp($_);
+                        next if ( $_ =~ m/^LIN/ ); 
+                        my @vlan = split(/\s+/, $_);
+                        print("<tr><td bgcolor=bcafc4>$vlan[0]</td><td>$vlan[2]</td><td bgcolor=e7e7e7>$vlan[1]</td> \n");
+                }
+	  }
+
+	  if ( $vnics_count == 0 ) {
+		print("<tr height=10><td><b>No VNIC Interfaces</b></td><td><b>-</b></td><td><b>-</b></td></tr>\n");
+	  } else {
+                ## VNIC Table:
+                print("<tr height=10><td><b>VNIC Interface</b></td><td><b>Physical Link</b></td><td><b>Tag</b></td></tr>\n");
+                foreach(@vnics) { 
+                        chomp($_);
+                        next if ( $_ =~ m/^LIN/ );
+                        my @vnic = split(/\s+/, $_);
+                        print("<tr><td bgcolor=bcafc4>$vnic[0]</td><td>$vnic[2]</td><td bgcolor=e7e7e7>$vnic[1]</td> \n");
+                }		
+	  }
+	
+                print("</table>\n");
+        }  	
+
+
+
+	print("</td></table><br />\n");
+
+}
+
+sub print_cpumodule()
+{
+        print("<h2>Processors</h2>");
+        print('<table><tr><td><img src="graphs/load.png"></td>');
+        print('<td><img src="graphs/cpu.png"></td>');
+
+	print("</table><br />\n");
+}
+
+
+sub print_memmodule()
+{
+        print("<h2>Memory</h2>");
+        print('<table><tr><td><img src="graphs/mem.png"></td>');
+        print('<td><img src="graphs/vmem.png"></td>');
+
+        print("</table><br />\n");
+}
+
+
+sub print_zfsmodule() 
+{
+        print("<h2>ZFS / Storage</h2>");
+        print('<table><tr><td><img src="graphs/zfs-rw.png"></td><td>');
+	my @zdisks = GetZpoolInstances();
+	foreach my $zdisk (@zdisks){ 
+		print("<img src=\"graphs/disk-${zdisk}.png\"><br />");
+	}
+
+	print("</td></table><br />\n");
+
+}
+
+sub print_zoneview()
+{
+ print("<hr>");
+ print("<center><h1>Zone View</h1></center>\n");
+ 
+ print("<table><tr>");
+ print("<td><img src=\"graphs/caps-cpu-rollup-5d.png\"></td>");
+ print("<td><img src=\"graphs/caps-mem-rollup-5d.png\"></td><tr>");
+ print("<td><img src=\"graphs/zones-read-rollup-5d.png\"></td>");
+ print("<td><img src=\"graphs/zones-write-rollup-5d.png\"></td>");
+ print("</table>\n");
+
+}
+
+sub get_linkIP($)
+{
+	my $IP      = 0;
+	my $NETMASK = 0;
+	my $BCAST   = 0;
+	my $LINK    = shift;
+
+	if ($LINK =~ m/\s/) {
+       	 	print("DANGER: Whitespace in argument \($LINK\) suggests malicious intent!!!\n");
+		return();
+	}
+
+
+	my @ifconfig =  `/sbin/ifconfig $LINK 2>/dev/null`;
+
+
+	foreach(@ifconfig){
+       		 chomp($_);
+        	$_ =~ s/^\s*//;
+
+        	if ( $_ =~ m/^inet/ ) {
+               		my @tmp = split(/\s+/, $_);
+                	$IP      = $tmp[1];
+                	$NETMASK = $tmp[3];
+                	$BCAST   = $tmp[5];
+        	}
+	}
+
+	if ( $IP == 0 ) {
+        	return("Unknown");
+	} else {
+        	return($IP);
+	}
+
+}
+
+
+sub print_zones()
+{
+	my @zones = `/usr/sbin/zoneadm list -vc`;
+	if(@zones){
+		print("<h2>Installed Zones</h2>");
+	} else {
+		return();
+	}
+	
+	print("<table width=800>\n");
+	foreach(@zones){
+		print("<tr><td>$_</td></tr>\n");
+		
+	}
+	print("</table><br /><hr /> <br/>\n");
+	
+	
+}
+
+
+sub print_cputable()
+{
+
+	$NCPUS = ${Kstat}->{unix}->{0}->{system_misc}->{ncpus};
+	my $CPU_CLOCK = ${Kstat}->{cpu_info}->{0}->{cpu_info0}->{clock_MHz};
+	my $CPU_VENDOR = ${Kstat}->{cpu_info}->{0}->{cpu_info0}->{vendor_id};
+	my $CPU_CORES = ${Kstat}->{cpu_info}->{0}->{cpu_info0}->{ncore_per_chip};
+	my $CPU_TYPE = "Unknown";
+
+	if ( $CPU_CORES == 4 ) {  $CPU_TYPE = "Quad Core" }
+	if ( $CPU_CORES == 2 ) {  $CPU_TYPE = "Dual Core" }
+	if ( $CPU_CORES == 1 ) {  $CPU_TYPE = "Single Core" }
+
+print <<END;
+<table width=250>
+ <tr><td bgcolor=bcafc4>Make</td><td bgcolor=e7e7e7>${MAKE}</td>
+ <tr><td bgcolor=bcafc4>Model</td><td bgcolor=e7e7e7>${MODEL}</td>
+ <tr><td bgcolor=bcafc4>Serial/Tag</td><td bgcolor=e7e7e7>${SERIAL}</td>
+ <tr><td bgcolor=bcafc4>OS Build</td><td bgcolor=e7e7e7>${VERSION}</td>
+ <tr><td bgcolor=bcafc4>CPU Make</td><td bgcolor=e7e7e7>${CPU_VENDOR}</td>
+ <tr><td bgcolor=bcafc4>Clock Rate (Mhz)</td><td bgcolor=e7e7e7>${CPU_CLOCK}</td>
+ <tr><td bgcolor=bcafc4>Type</td><td bgcolor=e7e7e7>${CPU_TYPE}</td>
+ <tr><td bgcolor=bcafc4>Cores Total</td><td bgcolor=e7e7e7>${NCPUS}</td>
+END
+
+	my $LOAD1 = ${Kstat}->{unix}->{0}->{system_misc}->{avenrun_1min};
+	my $LOAD5 = ${Kstat}->{unix}->{0}->{system_misc}->{avenrun_5min};
+	my $LOAD15 = ${Kstat}->{unix}->{0}->{system_misc}->{avenrun_15min};
+
+	$LOAD1 /= 256;
+	$LOAD5 /= 256;
+	$LOAD15 /= 256;
+
+ 	print("<tr height=10><td></td><td><b>Load Average</b></td></tr>\n");
+
+	if ($LOAD1 > $NCPUS ) {
+   	  printf("<tr><td bgcolor=bcafc4>1min Avg</td><td bgcolor=d97373>%5.2f</td> \n", $LOAD1);
+	} else {
+   	  printf("<tr><td bgcolor=bcafc4>1min Avg</td><td bgcolor=2aff3e>%5.2f</td> \n", $LOAD1);
+	}
+
+	if ($LOAD5 > $NCPUS ) {
+   	  printf("<tr><td bgcolor=bcafc4>5min Avg</td><td bgcolor=d97373>%5.2f</td> \n", $LOAD5);
+	} else {
+   	  printf("<tr><td bgcolor=bcafc4>5min Avg</td><td bgcolor=2aff3e>%5.2f</td> \n", $LOAD5);
+	}
+
+	if ($LOAD15 > $NCPUS ) {
+   	  printf("<tr><td bgcolor=bcafc4>15min Avg</td><td bgcolor=d97373>%5.2f</td> \n", $LOAD15);
+	} else {
+   	  printf("<tr><td bgcolor=bcafc4>15min Avg</td><td bgcolor=2aff3e>%5.2f</td> \n", $LOAD15);
+	}
+
+
+	my $NPROCS = ${Kstat}->{unix}->{0}->{system_misc}->{nproc};
+ 	print("<tr height=10><td></td><td><b>Processes</b></td></tr>\n");
+
+	if ($NPROCS > 20000) {
+   		printf("<tr><td bgcolor=bcafc4>Total</td><td bgcolor=d97373><a href='/graphs/procs.png' class='stealth'>%d</a></td> \n", $NPROCS);
+	} else {
+   		printf("<tr><td bgcolor=bcafc4>Total</td><td bgcolor=2aff3e><a href='/graphs/procs.png' class='stealth'>%d</a></td> \n", $NPROCS);
+	}
+	 
+  	print("</table>\n");
+}
+##
+
+
+sub print_memtable()
+{
+
+$PHYS = get_physmem();
+my $ARC  = get_arcSize();
+my $KERN = get_kernelSize() - $ARC;
+my $RSS  = get_userRSS();
+my $FREE = get_freeMem();
+my $USED = $PHYS - $FREE;
+my $USER = $PHYS - $ARC - $KERN - $FREE;
+my $TOTAL_USED = $KERN + $ARC + $USER;
+
+my $ARC_PCT  = ($ARC  / $USED) * 100.0;
+my $KERN_PCT = ($KERN / $USED) * 100.0;
+my $RSS_PCT  = ($RSS  / $USED) * 100.0; 
+my $USER_PCT = ($USER / $USED ) * 100.0;
+
+my $ERROR    = $KERN + $ARC + $RSS;
+my $TOTAL_PCT = 0;
+my $ERROR_MARGIN = 0;
+
+if ( $ERROR > $USED) { 
+        $TOTAL_PCT = ( $USED / $ERROR ) * 100.0;
+        $ERROR_MARGIN = 100 - $TOTAL_PCT;
+}  
+
+
+my $FREE_PCT = ($FREE / $PHYS) * 100.0;
+my $USED_PCT = 100 - $FREE_PCT;
+
+
+print("<table width=250>");
+printf("<tr><td bgcolor=bcafc4>Physical Memory</td><td class=\"v1\">%9d MB</td>\n", $PHYS);
+
+if ( $FREE_PCT < 2 ){
+	printf("<tr><td bgcolor=bcafc4 align=\"right\">Free Memory</td><td class=\"bad\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $FREE, $FREE_PCT);
+} else {
+	printf("<tr><td bgcolor=bcafc4 align=\"right\">Free Memory</td><td class=\"good\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $FREE, $FREE_PCT);
+}
+
+
+printf("<tr><td bgcolor=bcafc4 align=\"right\">Used Memory</td><td class=\"v1\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $USED, $USED_PCT);
+print(" <tr height=10><td align=\"center\"><b>Used Breakdown:</b></td></tr>");
+
+
+if ($KERN_PCT > 30) {
+	printf("<tr><td bgcolor=bcafc4>Kernel</td>    <td class=\"bad\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $KERN, $KERN_PCT);
+} else {
+	printf("<tr><td bgcolor=bcafc4>Kernel</td>    <td class=\"good\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $KERN, $KERN_PCT);
+}
+
+if ($ARC_PCT < 20) {
+	printf("<tr><td bgcolor=bcafc4>ARC</td>       <td class=\"bad\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $ARC, $ARC_PCT);
+} else {
+	printf("<tr><td bgcolor=bcafc4>ARC</td>       <td class=\"good\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $ARC, $ARC_PCT);
+}
+
+### OLD METHOD:
+#if ($RSS_PCT > 80) {
+#	printf("<tr><td bgcolor=bcafc4>User (Est)</td><td class=\"bad\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $RSS, $RSS_PCT);
+#} else {
+#	printf("<tr><td bgcolor=bcafc4>User (Est)</td><td class=\"good\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $RSS, $RSS_PCT);
+#}
+
+### NEW METHOD:
+if ($USER_PCT > 80) {
+	printf("<tr><td bgcolor=bcafc4>User (Est)</td><td class=\"bad\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $USER, $USER_PCT);
+} else {
+	printf("<tr><td bgcolor=bcafc4>User (Est)</td><td class=\"good\">%9d MB</td><td class=\"v2\">%3.2f%%</td>\n", $USER, $USER_PCT);
+}
+
+printf("<tr><td bgcolor=bcafc4 align=\"right\"> = Total:</td> <td class=\"v1\">%9d MB</td>\n", $TOTAL_USED);
+				###...  <TD class=\"v2\">%3.2f%%</td>\n", $TOTAL, $TOTAL_PCT);
+### Removing error margin along with "OLD METHOD" above.
+###printf("<tr height=10><td><i>Margin of Error</td><td><i>%3.2f%%</tr>\n", $ERROR_MARGIN); 
+
+
+
+my @SWAPFILE = `/usr/sbin/swap -lh`;
+if(@SWAPFILE){
+        shift(@SWAPFILE);   ## Dump header
+        my $SWAPLINE = shift(@SWAPFILE);
+        my @SWAPITEM = split(/\s+/, $SWAPLINE);
+        print(" <tr height=10><td align=\"center\"><b>Pagefile:</b></td></tr>\n");
+        printf("<tr><td bgcolor=bcafc4 align=\"right\">Size</td><td class=\"v1\">${SWAPITEM[3]}</td>\n");
+        printf("<tr><td bgcolor=bcafc4 align=\"right\">Free</td><td class=\"v1\">${SWAPITEM[4]}</td>\n");
+}
+ 
+ 
+ 
+my $SWAP_SUMMARY = `/usr/sbin/swap -sh`;
+if ($SWAP_SUMMARY){
+
+        my @SWAP_SUM = split('\s+', $SWAP_SUMMARY);
+
+        my $SWAP_ALLOC = $SWAP_SUM[1];
+        my $SWAP_RESV  = $SWAP_SUM[4];
+        my $SWAP_USED  = $SWAP_SUM[7];
+        my $SWAP_AVAIL = $SWAP_SUM[9];
+
+        #print("$SWAP_ALLOC allocated, $SWAP_RESV reserved, $SWAP_USED used and  $SWAP_AVAIL avail\n");
+
+        print(" <tr height=10><td align=\"center\"><b>Swap/VM:</b></td></tr>\n");
+        printf("<tr><td bgcolor=bcafc4 align=\"left\">Allocated</td><td class=\"v1\">$SWAP_ALLOC</td>\n");
+        printf("<tr><td bgcolor=bcafc4 align=\"left\">Reserved</td><td class=\"v1\">$SWAP_RESV</td>\n");
+        printf("<tr><td bgcolor=bcafc4 align=\"right\">= Used:</td><td class=\"v1\">$SWAP_USED</td>\n");
+        printf("<tr><td bgcolor=bcafc4 align=\"right\">Available</td><td class=\"v1\">$SWAP_AVAIL</td>\n");
+
+
+}
+
+
+
+
+print("</table>");
+END
+
+}
+
+sub print_zonetable()
+{
+
+
+}
+
+
+### Abandon for now.
+sub print_nettable()
+{
+
+my $e1000g0_vlans = list_ifvlans(0);
+my $e1000g2_vlans = list_ifvlans(2);
+
+print <<END;
+<table width=250>
+ <tr height=10><td>Traffic Totals:</td></tr>
+ <tr><td bgcolor=bcafc4>Public In</td><td bgcolor=e7e7e7>Value1</td>
+ <tr><td bgcolor=bcafc4>Public Out</td><td bgcolor=e7e7e7>Value2</td>
+ <tr><td bgcolor=bcafc4>Private In</td><td bgcolor=e7e7e7>Value3</td>
+ <tr><td bgcolor=bcafc4>Private Out</td><td bgcolor=e7e7e7>Value3</td>
+ <tr height=10><td>VLANS:</td></tr>
+ <tr><td bgcolor=bcafc4>Public VLANs</td><td bgcolor=e7e7e7>$e1000g0_vlans</td>
+ <tr><td bgcolor=bcafc4>Private VLANs</td><td bgcolor=e7e7e7>$e1000g2_vlans</td>
+ 
+</table>
+END
+
+}
+
+
+
+sub print_disktable()
+{
+
+
+print("<table width=250 height=100%>");
+
+dump_zpools();
+
+
+print("</table>");
+
+}
+
+
+sub dump_zpools()
+{
+	my $list = "";	
+	my @zpoolist = `/usr/sbin/zpool list -Ho name`;
+	foreach (@zpoolist){
+		chomp($_);
+		my $ZFREE = `/usr/sbin/zfs get -Hp -o value available $_`;
+		my $ZUSED = `/usr/sbin/zfs get -Hp -o value used $_`;
+		my $ZSIZE = $ZUSED + $ZFREE;
+		my $ZFREE_PCT = ( $ZFREE / $ZSIZE ) * 100.0;
+		my $ZUSED_PCT = ( $ZUSED / $ZSIZE ) * 100.0;
+		$ZFREE = $ZFREE / 1073741824;	## Convert to Gigs
+		$ZUSED = $ZUSED / 1073741824;	## Convert to Gigs
+		$ZSIZE = $ZSIZE / 1073741824;	## Convert to Gigs
+ 		print("<tr height=10><td><i>ZPool:</i></td><td><b> $_ </b></td></tr>\n");
+		print("<tr><td bgcolor=bcafc4>Size</td><td bgcolor=e7e7e7>${ZSIZE} GB</td> \n");
+		printf("<tr><td bgcolor=bcafc4>Used</td><td bgcolor=e7e7e7>%d GB</td><td>%3.2f%%</td> \n", $ZUSED, $ZUSED_PCT);
+		if ($ZFREE_PCT < 10.0 ) {
+		   printf("<tr><td bgcolor=bcafc4>Free</td><td bgcolor=d97373>%d GB</td><td>%3.2f%%</td> \n", $ZFREE, $ZFREE_PCT);
+		} else {
+		   printf("<tr><td bgcolor=bcafc4>Free</td><td bgcolor=2aff3e>%d GB</td><td>%3.2f%%</td> \n", $ZFREE, $ZFREE_PCT);
+		}
+	}
+
+}
+
+
+sub list_ifvlans($)
+{
+ 	my $if = shift();
+	my @dladm = `/usr/sbin/dladm show-link -p`;
+	my $vlans = 0;
+	
+	foreach (@dladm){
+		if ( $_ =~ m/e1000g${if}/ ) {
+		 	##....	
+		}	
+	}
+
+
+	return("None");
+}
+
+#
+# Totals up RSS for each process, via ps (Memory Resident) Returns in MB
+#
+sub get_userRSS()
+{
+        my @procRSS = `/usr/bin/ps -e -o rss`;
+        my $userRSS = 0;
+        foreach ( @procRSS ) {
+                chomp($_);
+                $userRSS = $userRSS + $_;       
+        }
+        return($userRSS /1024);
+}
+
+
+#
+# Totals up VSZ for each process, via ps (Virtual Size) Returns in MB
+#
+sub get_userVM()
+{
+        my @procVM  = `/usr/bin/ps -e -o vsz`;
+        my $userVM  = 0;
+        foreach ( @procVM ) {
+                chomp($_);
+                $userVM = $userVM + $_;
+        }
+
+        return($userVM /1024);
+}
+
+sub get_kernelSize()
+{
+        
+        my $ppkernel = ${Kstat}->{unix}->{0}->{system_pages}->{pp_kernel};
+        my $kernelsz = $ppkernel * $pagesize;   ## Kernel size in bytes
+
+        return( $kernelsz / 1048576 );          ## Return kernel size in MB
+}
+
+sub get_physmem()
+{
+        my $physpg = ${Kstat}->{unix}->{0}->{system_pages}->{physmem};
+        my $phys   = $physpg * $pagesize;
+
+        return( $phys / 1048576 );
+}
+
+sub get_arcSize()
+{
+        my $arcsz = ${Kstat}->{zfs}->{0}->{arcstats}->{size};
+
+        return ( $arcsz / 1048576 );    ## Return in MB
+}
+
+
+sub get_freeMem()
+{
+        my $freepg = ${Kstat}->{unix}->{0}->{system_pages}->{pagesfree};
+        my $free   = $freepg * $pagesize;
+        
+        return ( $free / 1048576 );
+}
+
+
+
+
+
+sub btoh($)
+{         
+        my $byte = shift;
+           
+        if ( $byte == 0 ) {
+                return("0");
+        }  
+           
+        if ( $byte < 1023 )  {
+                return("1K");
+        }  
+           
+        if ( $byte < 1048575 ) {
+                my $y = $byte / 1024;
+                my $x = sprintf("%.1dK", $y);
+                return($x);
+        }  
+           
+        if ( $byte < 1073741823 ) {
+                my $y = $byte / 1048576;
+                my $x = sprintf("%.1dM", $y);
+                return($x);
+        }  
+           
+        if ( $byte >= 1073741824 ) {
+                my $y = $byte / 1073741824;
+                my $x = sprintf("%.1dG", $y);
+                return($x);
+        }  
+           
+        die("Ooops.\n");
+}
+
+
+### QUIKCAPS: Ugly formating
+
+
+sub print_quikcaps() 
+{
+
+my @zoneList = `/usr/sbin/zoneadm list -p`;
+my @rcapStat = `/bin/rcapstat -z 1 1`;
+my @zfsList  = `/sbin/zfs list -Ht filesystem` unless ($HOSTNAME =~ m/shared/);
+
+if ( ! @zoneList[1] ){
+	print("<table width=800><tr><td><h2><i><center>No zones present.</center></i></h2><td></table>\n");
+	$NOZONES = 1;
+	return();
+}
+
+
+
+my @flow_kstats = `kstat -p -c flow unix:0::class | /usr/xpg4/bin/grep -v mcast`;
+foreach (@flow_kstats)
+{
+        my ($x, $y, $name) = split(/:/, $_);
+        push(@flows, $name);    
+}
+
+my @link_kstats = `kstat -p -c net link:0::class`;
+foreach (@link_kstats)
+{
+        my ($x, $y, $name) = split(/:/, $_);
+        push(@links, $name);               
+}
+
+
+
+print("<center><h4>Accelerators (<i>QuikCaps4</i>)</h4><table>\n");
+
+### PRINT HEADER:
+print <<ENDA;
+
+  <tr>
+   <td align=center>Zone</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td colspan=3 align=center bgcolor=99cba2> Z F S </td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td colspan=4 align=center bgcolor=99cba2> C P U </td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td colspan=4 align=center bgcolor=99cba2>Resident Memory (RCap)</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td colspan=2 align=center bgcolor=99cba2>Virtual Memory</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td bgcolor=99cba2>Uptime</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td colspan=2 align=center bgcolor=99cba2>I/O</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td colspan=3 align=center bgcolor=99cba2>Network</td>
+  </tr>
+  <tr>
+   <td align=center>Name</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td align=center>Free</td>
+   <td align=center>Used</td>
+   <td align=center>Quota</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+
+   <td align=center>Used</td>
+   <td align=center>Cap</td>
+   <td align=center>Max</td>
+   <td align=center>Over%</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+
+   <td align=center class="gap-left">Used</td>
+   <td align=center>Cap</td>
+   <td align=center>Over</td>
+   <td align=center class="gap-right">VM</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+
+   <td align=center>Used</td>
+   <td align=center>Cap</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+
+   <td align=center class="gap-left">Days</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+
+   <td align=center class="gap-left">Read</td>
+   <td align=center>Write</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+
+   <td><table width=160>
+   <td class="netval" align=center class="gap-left">In</td>
+   <td class="netval" align=center>Out</td>
+   <td class="netname" align=center>Name</td>
+   </table></td>
+
+  </tr>
+ENDA
+
+
+        my $line_color = 0;
+
+## TOTALS:
+
+my $zoneCount     = 0;
+my $zfsUsedTotal  = 0;
+my $zfsQuotaTotal = 0;
+my $cpuUsageTotal = 0;
+my $cpuCapTotal   = 0;
+my $rcapRSSTotal  = 0;
+my $rcapCAPTotal  = 0;
+my $swapUsageTotal = 0;
+my $swapLimitTotal = 0;
+
+
+
+foreach(@zoneList){
+        
+        my ($zoneId, $zoneName, $zoneState, $zoneMount) = split(/:/, $_);
+
+        next if($zoneId == 0 || $zoneState ne "running");
+
+        ###
+        ### RCTL KStats:
+        ###
+
+        my $locker = "lockedmem_zone_${zoneId}";
+        my $lockedUsage = ${Kstat}->{caps}->{$zoneId}->{$locker}->{usage};
+        my $lockedLimit = ${Kstat}->{caps}->{$zoneId}->{$locker}->{value};
+        $lockedLimit = 0 if ($lockedLimit == 18446744073709551615);
+
+        my $swapper = "swapresv_zone_${zoneId}";
+        my $swapUsage = ${Kstat}->{caps}->{$zoneId}->{$swapper}->{usage};
+        my $swapLimit = ${Kstat}->{caps}->{$zoneId}->{$swapper}->{value};
+        
+        my $chipper = "cpucaps_zone_${zoneId}";
+	my $cpuUsage = "n/a";
+	my $cpuMax   = "n/a"; 
+	my $cpuValue = "n/a";
+	my $cpuAbove = "n/a";
+	my $cpuBelow = "n/a";
+	
+	if ( exists  ${Kstat}->{caps}->{$zoneId}->{$chipper} ) {
+        	$cpuUsage = ${Kstat}->{caps}->{$zoneId}->{$chipper}->{usage};
+        	$cpuMax   = ${Kstat}->{caps}->{$zoneId}->{$chipper}->{maxusage};
+        	$cpuValue = ${Kstat}->{caps}->{$zoneId}->{$chipper}->{value};
+        	$cpuAbove = ${Kstat}->{caps}->{$zoneId}->{$chipper}->{above_sec};
+        	$cpuBelow = ${Kstat}->{caps}->{$zoneId}->{$chipper}->{below_sec};
+	} 
+
+        my $rcapVM = 0;
+        my $rcapRSS = 0;
+        my $rcapCAP = 0;
+        my $rcapOVER = "-";
+        if (`/usr/bin/uname -v` !~ /^joyent/) {
+          ###
+          ### RCAP:
+          ###
+          foreach(@rcapStat) {
+             my ($rid, $rzone, $rnproc, $rvm, $rrss, $rcap, $rat, $ravgat, $rpg, $ravgpg) = split;
+
+                     next if ( $rid eq "id" );
+
+             if ($rzone eq $zoneName) {
+               #print("-- RCAP: $rzone, $rvm, $rrss, $rcap\n");
+               $rcapVM   = $rvm;
+               $rcapRSS  = $rrss;
+               $rcapCAP  = $rcap;
+               $rcapOVER = $rpg;
+             }
+         }
+        } else {
+          # memory_cap:(zoneid):(zonenames first 30 chars):key
+          my $shortname = substr($zoneName,0,30);
+          my $VM =  ${Kstat}->{memory_cap}->{$zoneId}->{$shortname}->{swap};
+          my $RSS = ${Kstat}->{memory_cap}->{$zoneId}->{$shortname}->{rss};
+          my $CAP = ${Kstat}->{memory_cap}->{$zoneId}->{$shortname}->{physcap};
+          my $OVER = ${Kstat}->{memory_cap}->{$zoneId}->{$shortname}->{nover};
+          $rcapVM  = &btoh($VM);
+          $rcapRSS = &btoh($RSS);
+          $rcapCAP = &btoh($CAP);
+          $rcapOVER = $OVER;
+        }
+
+        ###
+        ### ZFS:
+        ###
+        my $zfsUsed = 0;
+        my $zfsFree = 0;
+        my $zfsQuota = 0;
+        my $mountPoint = "";
+        
+        foreach(@zfsList) {
+                my ($zDataset, $zUsed, $zAvail, $zRefer, $zMount) = split;
+
+                if ($zMount eq $zoneMount) {
+                        $zfsQuota = `/usr/sbin/zfs get -H -o value quota $zDataset`;
+                        chomp($zfsQuota);
+                        $zfsUsed  = $zUsed;
+                        $zfsFree  = $zAvail;
+                        $mountPoint = $zMount;
+
+                        #print(" -- ZFS: $zDataset    $zUsed / $zAvail  - Quota: $zfsQuota\n");
+                }
+        }       
+        ###
+
+        ###
+        ### Estimated Zone Uptime & CPU Excess Percentage
+        ###
+
+        my $uptimeSec   = $cpuAbove + $cpuBelow;
+        my $uptimeDays  = $uptimeSec / 60 / 60 / 24;    
+	$uptimeDays = sprintf("%.1f", $uptimeDays);	
+
+	my $cpuOver     = "n/a";
+	my $cpuOverPerc = "n/a";
+	if ( $cpuValue != "n/a" ) { 
+        	$cpuOver     = $cpuAbove / $uptimeSec;               ### This is the percentage of time spent above the CPU cap
+        	$cpuOverPerc = sprintf("%.2f", $cpuOver * 100);
+	} 
+		
+                
+	
+
+        ###
+        ### VFS Activity
+        ###
+        my @fsstats = `/usr/bin/fsstat -f $mountPoint 2>/dev/null`;
+        
+        my $vfsReadBytes  = 0;
+        my $vfsWriteBytes = 0;
+
+        foreach(@fsstats) {
+                my ($vop, $vopCount, $vopBytes) = split;
+                next if ( !$vop ); 
+
+                if ( $vop eq "read") { $vfsReadBytes  = $vopBytes; }
+                if ( $vop eq "write") { $vfsWriteBytes = $vopBytes; }
+        }
+        ###
+
+
+        ######### FORMATING:
+        
+
+	$swapUsageTotal +=  $swapUsage;
+	$swapLimitTotal +=  $swapLimit;
+
+        $swapUsage = btoh($swapUsage);
+        $swapLimit = btoh($swapLimit);
+
+
+
+        ## Output lines:
+        if ( $line_color == 0 ) {
+              print("<tr bgcolor=bcafc4>\n");
+              $line_color = 1;    
+        } else {             
+              print("<tr bgcolor=e7e7e7>\n");
+              $line_color = 0;
+        }   
+
+print <<ENDB;
+   <td>${zoneName}</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td title="Unused Disk Space">$zfsFree</td>
+   <td title="Used Disk Space">$zfsUsed</td>
+   <td title="Disk Quota">$zfsQuota</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td title="CPU in Use Right Now; 100 == 1 CPU Core"><a href="/graphs/caps-cpu-${zoneName}.png" class="stealth">$cpuUsage</a></td>
+   <td title="CPU Cap; 100 == 1 CPU Core">$cpuValue</td>
+   <td title="Burst High Water Mark, cummulative since boot">$cpuMax</td>
+   <td title="Percentage of time CPU has burst over the cap, cummulative since boot">$cpuOverPerc</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td title="RSS Memory currently in use"><a href="/graphs/caps-mem-${zoneName}.png" class="stealth">$rcapRSS</a></td>
+   <td title="RSS Cap">$rcapCAP</td>
+   <td title="For Solaris, amount by which Zone exceeded RSS Cap - For SmartOS, number of times over cap">$rcapOVER</td>
+   <td title="Sanity Check Value: Esimated total VM Size per rcapstat">$rcapVM</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td title="Virtual Memory (RSS+Swap) in use"><a href="/graphs/caps-mem-${zoneName}.png" class="stealth">$swapUsage</a></td>
+   <td title="Hard Virtual Memory (RSS+Swap) Limit">$swapLimit</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td title="Estimated Uptime, may be off slightly">$uptimeDays</td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+   <td title="Total Read I/O Operations Since Mount"><a href="/graphs/zfsrw-${zoneName}.png" class="stealth">$vfsReadBytes</a></td>
+   <td title="Total Write I/O Operations Since Mount"><a href="/graphs/zfsrw-${zoneName}.png" class="stealth">$vfsWriteBytes</a></td>
+     <td width=4 bgcolor="white"> &nbsp;</td>
+ENDB
+
+#findFlows($zoneName);
+printNet($zoneId);
+
+print("</tr>\n");
+
+if ( $cpuUsage == "n/a" ) { 
+	$cpuUsage = 0; 
+	$cpuValue = 0; 
+}
+
+### Increase totals:
+$zoneCount++;
+$cpuUsageTotal += $cpuUsage;
+$cpuCapTotal   += $cpuValue;
+
+## Sloppy ZFS Handling:
+ if ($zfsUsed =~ m/G/){
+	$zfsUsed =~ s/G//;
+ } elsif ( $zfsUsed =~ m/M/ ){
+	$zfsUsed = 1;
+ } else {
+	$zfsUsed = 1;
+	
+ }
+
+$zfsQuota =~ s/G//;
+
+$zfsUsedTotal  += $zfsUsed;
+$zfsQuotaTotal += $zfsQuota;
+
+if ( $rcapRSS =~ m/M/) { $rcapRSS =~ s/M//; }
+if ( $rcapCAP =~ m/M/) { $rcapCAP =~ s/M//; }
+if ( $rcapRSS =~ m/G/) { $rcapRSS =~ s/G//; $rcapRSS *= 1024; }
+if ( $rcapCAP =~ m/G/) { $rcapCAP =~ s/G//; $rcapCAP *= 1024; }
+
+$rcapRSSTotal  += $rcapRSS;
+$rcapCAPTotal  += $rcapCAP;
+
+
+}
+print("</table>\n");
+
+#### THIS SHOULD BE A MODULE, BUT DO IT HERE: 2 COLUMN SUMMARY:
+
+## ZFS
+my $zfsUtilization = "na";
+if ( $zfsUsedTotal > 0  && $zfsQuotaTotal > 0 ) {
+  $zfsUtilization = ( $zfsUsedTotal / $zfsQuotaTotal ) * 100;
+  $zfsUtilization =  sprintf("%3.2f", $zfsUtilization);
+} 
+
+## RSS
+my $rcapUtilization = "na";
+if ( $rcapRSSTotal > 0 && $rcapCAPTotal > 0 ) {
+  $rcapUtilization = ( $rcapRSSTotal / $rcapCAPTotal ) * 100;
+  $rcapUtilization = sprintf("%3.2f", $rcapUtilization);
+} 
+
+## VM/Swap
+my $vmUtiliziation = "na";
+if ( $swapUsageTotal > 0 && $swapLimitTotal > 0 ) { 
+  $swapUsageTotal = sprintf("%d", $swapUsageTotal / 1048576);
+  $swapLimitTotal = sprintf("%d", $swapLimitTotal / 1048576);
+  my $vmUtiliziation = ( $swapUsageTotal / $swapLimitTotal ) * 100;
+  $vmUtiliziation = sprintf("%3.2f", $vmUtiliziation);
+} 
+
+## RAM
+my $ramCapacity = ( $rcapCAPTotal / $PHYS) * 100;
+$ramCapacity = sprintf("%3.2f", $ramCapacity);
+
+## CPU
+my $cpuAvail = $NCPUS * 100;
+my $cpuUtilization = "na";
+if ( $cpuUsageTotal > 0 && $cpuAvail > 0 ) {
+  $cpuUtilization = ( $cpuUsageTotal / $cpuAvail ) * 100;
+  $cpuUtilization    = sprintf("%3.2f", $cpuUtilization);
+}
+
+
+
+
+print <<END;
+<table width=350>
+ <tr><td bgcolor=bcafc4>Zone Count</td><td bgcolor=e7e7e7>$zoneCount</td>
+ <tr><td><b>Resource</b></td>       <td><b>In Use</b></td><td><b>Allocated</b></td><td><b>Utilization</b></td><td><b>Capacity</b></td>
+END
+
+
+## Color RAM Cpacity & Utilization
+print("<tr><td bgcolor=bcafc4>RAM (MB)</td>    <td bgcolor=e7e7e7 title='Sum of all zones RSS Used'>$rcapRSSTotal</td><td title='Sum of all zone RSS Caps'>$rcapCAPTotal</td>");
+
+if ( $rcapUtilization > 70 ) {
+	print("<td bgcolor=ff2222 title='Percentage of RSS Allocated Actually In Use by Zones'>$rcapUtilization %</td>");
+} else {
+	print("<td bgcolor=2aff3e title='Percentage of RSS Allocated Actually In Use by Zones'>$rcapUtilization %</td>");
+}
+
+
+if ( $ramCapacity < 100 ) {
+	print("<td bgcolor=feff97 title='Percentage of total physical memory allocated (RSS Cap) to zones'>$ramCapacity</td> \n");
+} elsif  ( $ramCapacity > 100 ) {
+	print("<td bgcolor=ff2222 title='Percentage of total physical memory allocated (RSS Cap) to zones'>$ramCapacity</td> \n");
+} else {
+	print("<td bgcolor=2aff3e title='Percentage of total physical memory allocated (RSS Cap) to zones'>$ramCapacity</td> \n");
+}
+
+## Color VM
+print("<tr><td bgcolor=bcafc4>Swap/VM (MB)</td><td bgcolor=e7e7e7 title='Sum of all zone VM Used'>$swapUsageTotal</td><td title='Sum of all zone VM Caps'>$swapLimitTotal</td>");
+if ( $vmUtiliziation > 70 ) {
+	print("<td bgcolor=ff2222 title='Percentage of Allocated VM Actually in Use'>$vmUtiliziation %</td> \n");
+} else  {
+	print("<td bgcolor=2aff3e title='Percentage of Allocated VM Actually in Use'>$vmUtiliziation %</td> \n");
+}
+
+## Color Disk
+print("<tr><td bgcolor=bcafc4>Disk (GB)</td>   <td bgcolor=e7e7e7 title='Sum of all Disk Used'>$zfsUsedTotal</td><td title='Sum of all Zone Quatas'>$zfsQuotaTotal</td>");
+if ( $zfsUtilization > 90 ) {
+	print("<td bgcolor=ff2222 title='Percentage of Allocated Disk Actually In Use'>$zfsUtilization %</td> \n");
+} elsif ( $zfsUtilization > 80 ) {
+	print("<td bgcolor=feff97 title='Percentage of Allocated Disk Actually In Use'>$zfsUtilization %</td> \n");
+} else {
+	print("<td bgcolor=2aff3e title='Percentage of Allocated Disk Actually In Use'>$zfsUtilization %</td> \n");
+}
+
+## Color CPU
+print("<tr><td bgcolor=bcafc4>CPU</td>    <td bgcolor=e7e7e7 title='Sum of all zone CPU Used'>$cpuUsageTotal</td><td title='Sum of all CPU Caps'>$cpuCapTotal</td>");
+
+if ( $cpuUtilization > 90 ) {
+	print("<td bgcolor=ff2222 title='Percentage of Physical CPUs Actually In Use'>$cpuUtilization %</td> \n");
+} elsif ( $cpuUtilization > 80 ) {
+	print("<td bgcolor=feff97 title='Percentage of Physical CPUs Actually In Use'>$cpuUtilization %</td> \n");
+} else {
+	print("<td bgcolor=2aff3e title='Percentage of Physical CPUs Actually In Use'>$cpuUtilization %</td> \n");
+}
+
+
+print("</table>\n");
+
+}	### END OF ZONE LIST (quikcaps)
+
+
+
+
+###
+### Here we use several tricks to get the zpool disk names out of the zpool.cache, then we loop through iostat in order to derefence into a standard sdX isntance
+###     The result is a returned array with sdX1, sdX2, etc.
+###
+sub GetZpoolInstances(){
+        my @ZpoolInstances;
+        my @sdList;
+	my @ZpoolDisks;
+
+        ## Get a list of all the proper names for the available disks:
+        my @sdTemp = `iostat -E | grep Soft | awk '{print \$1}'`;
+        foreach(@sdTemp){
+                chomp($_);
+                #print ("IOstat said: $_\n");
+                push(@sdList, $_);
+        }
+
+        ## Now get the disks used by the pools
+        my @poolDisks = `strings /etc/zfs/zpool.cache  | grep dsk`;
+        foreach(@poolDisks) {
+                chomp($_);   
+                $_ =~ s/\/dev\/dsk\///;
+                push(@ZpoolDisks, $_);
+        }
+         
+        ## Now look up each sd* device looking for our pool disk; this is crapy but works.
+        foreach my $poolDrive (@ZpoolDisks){
+                $poolDrive =~ s/s\d//;
+                #print("Doing $poolDrive.........\n");                  # poolDrive is a cXtXdX pool drive.
+
+                foreach my $ioDrive (@sdList) {                            # ioDrive is a sdX name from the list of all disks
+                        my $tmpOut = `iostat -En $ioDrive | grep Soft | awk '{print \$1}'`;     # Now convert each ioDrive into cXtXdX format
+                        chomp($tmpOut);
+
+                        if ( $poolDrive eq $tmpOut  ) {                 # Finally, see if the conversion result matches one of our pool disks.
+                                #print("Found it. $poolDrive is $ioDrive\n");
+                                push(@ZpoolInstances, $ioDrive);
+                        } else {
+                                #print("Nope... $poolDrive is not $ioDrive ( $tmpOut )\n");
+                        }
+                }        
+        }        
+         
+        return(@ZpoolInstances);
+}
+
+## For SmartOS Net Kstats
+sub printNet($)
+{
+	my $zoneid = shift();
+	
+	print('<td><table width=160><tr>');
+	# link:0:z91_net0:obytes64
+
+	my $zif = "z${zoneid}_net0";
+	if (`/usr/bin/kstat -p link:0:${zif}:class` =~ /net/) {	
+		printf("<td class=\"netval\" title=\"Total Bytes Recieved Since Boot\">%s</td><td class=\"netval\" title=\"Total Bytes Sent Since Boot\">%s</td>", tx_btoh($Kstat->{link}{0}{$zif}{rbytes64}), tx_btoh($Kstat->{link}{0}{$zif}{obytes64}));
+		print("<td class=\"netname\" title=\"Link Name\"><a class=\"stealth\" href=\"graphs/net-${zoneid}.png\">net0</a></td> ");
+
+ 	} else {
+		print("<td class=\"netval\"><center>-</center></td>");
+		print("<td class=\"netval\"><center>-</center></td>");
+		print("<td class=\"netname\"><center>-</center></td>");
+	}
+	print('</table></td>');
+}
+
+## For Flows
+sub findFlows($)
+{
+	my $zone = shift();
+	my @myFlows;
+	my $find_count = 0;
+
+	print('<td><table width=160><tr>');
+
+
+	# Flip through the flows looking for a match to a zone:
+        foreach my $flow (@flows)
+        {                                                                                                               
+                if ( $flow =~ m/$zone.*/ ) {                                                                    
+			# Determine if the "flow" is a link or a flow:
+			if ( grep(/$flow/, @links) ){
+				if ( $find_count > 0 ) { print("<tr>"); }
+				printf("<td class=\"netval\" title=\"Total Bytes Recieved Since Boot\">%s</td><td class=\"netval\" title=\"Total Bytes Sent Since Boot\">%s</td>", tx_btoh($Kstat->{link}{0}{$flow}{rbytes64}), tx_btoh($Kstat->{link}{0}{$flow}{obytes64}));
+                        	print("<td class=\"netname\" title=\"Link Name\"><a class=\"stealth\" href=\"graphs/flow-${flow}.png\">$flow</a></td> ");
+
+			} else {
+				if ( $find_count > 0 ) { print("<tr>"); }
+				printf("<td class=\"netval\" title=\"Total Bytes Recieved Since Boot\">%s</td><td class=\"netval\" title=\"Total Bytes Sent Since Boot\">%s</td>", tx_btoh($Kstat->{unix}{0}{$flow}{rbytes}), tx_btoh($Kstat->{unix}{0}{$flow}{obytes}));
+                        	print("<td class=\"netname\" title=\"Flow Name\"><a class=\"stealth\" href=\"graphs/flow-${flow}.png\">$flow</a></td> ");
+			}
+			$find_count++;
+
+
+                }
+        }
+
+	if ($find_count == 0 ){
+		print("<td class=\"netval\"><center>-</center></td>");
+		print("<td class=\"netval\"><center>-</center></td>");
+		print("<td class=\"netname\"><center>-</center></td>");
+	}
+	print('</table></td>');
+}
+
+sub linkTX($)
+{
+	my $link = shift();
+	
+	my $in  = $Kstat->{link}{0}{$link}{rbytes64};
+	my $out = $Kstat->{link}{0}{$link}{obytes64};
+
+	tx_btoh($in);
+	tx_btoh($out);
+}
+
+sub flowTX($)
+{
+	my $flow = shift();
+	
+	my $in  = $Kstat->{unix}{0}{$flow}{rbytes};
+	my $out = $Kstat->{unix}{0}{$flow}{obytes};
+}
+
+
+sub tx_btoh($)
+{         
+        my $v = shift();
+        my $final; 
+
+        if  ( $v > 999999999999999 ) {
+                $final = sprintf("%3.2fP", $v / (2**50));
+        } elsif ( $v > 999999999999 ) {
+                $final = sprintf("%3.2fT", $v / (2**40));
+        } elsif ( $v > 999999999 ) {
+                $final = sprintf("%3.2fG", $v / (2**30));
+        }elsif ( $v > 999999 ) {
+                $final = sprintf("%3.2fM", $v / (2**20));
+        } elsif ( $v > 999 ) { 
+                $final = sprintf("%3.2fK", $v / (2**10));
+        } else {
+                $final = $v;
+        }
+
+        return($final);
+                                 
+}
+
+sub btoh($)
+{
+        my $byte = shift;
+
+        if ( $byte == 0 ) {
+                return("0");
+        }
+
+        if ( $byte < 1023 )  {
+                return("1K");   
+        }
+
+        if ( $byte < 1048575 ) {
+                my $y = $byte / 1024;
+                my $x = sprintf("%.1dK", $y);
+                return($x);
+        }
+
+        if ( $byte < 1073741823 ) {
+                my $y = $byte / 1048576;
+                my $x = sprintf("%.1dM", $y);
+                return($x);
+        }
+
+        if ( $byte >= 1073741824 ) {
+                my $y = $byte / 1073741824;
+                my $x = sprintf("%.1dG", $y);
+                return($x);
+        }
+
+        die("Ooops.\n");
+}

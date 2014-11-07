@@ -1,0 +1,128 @@
+#!/usr/perl5/bin/perl
+
+## benr@joyent.com      - flowstat 3/29/10
+## 
+
+
+use strict;
+use Sun::Solaris::Kstat;
+
+
+
+############# ARGUMENT HANDLING ###################
+my $interval = 1;
+my $ARGS = @ARGV;
+
+if($ARGS > 0 && $ARGV[0] =~ m/\d+/) {
+        $interval = $ARGV[0];
+} elsif($ARGS > 0 && $ARGV[0] eq "-h") {
+        die("Usage: $0 <interval>\n");
+} 
+
+my $ks = Sun::Solaris::Kstat->new();
+
+
+############## FLOW & LINK BUILDERS ###############
+my @linkKeys;
+my @flow_tmp;
+my @flowKeys;
+
+## Build a list of all LINKS
+my $link_ref = $ks->{link}{0};
+foreach my $lk ( keys(%$link_ref) ){
+        #print("Found key for: $lk\n");
+        push(@linkKeys, $lk);
+}
+
+## Build a list of all FLOWS
+my $flow_ref = $ks->{unix}{0};
+foreach my $fk ( keys(%$flow_ref) ){
+        if ( $flow_ref->{$fk}{class} eq "flow" && $fk !~ m/^mac\// ){
+                push(@flow_tmp, $fk);
+        }
+}
+## Now purge duplication from the flows list
+foreach my $x (@flow_tmp){
+  push(@flowKeys, $x) unless (  grep( /$x/, @linkKeys) );
+}
+####################################################
+
+
+## Print the lists:
+#foreach (@linkKeys){ print("Link found: $_\n"); }  # $link_ref->{key}{stat}
+#foreach (@flowKeys){ print("Flow found: $_\n"); }  # $flow_ref->{key}{stat}
+
+## For the sake of this program, lets sort the keys to be pretty:
+my @linkKeys_sorted = sort { $a cmp $b } @linkKeys;
+my @flowKeys_sorted = sort { $a cmp $b } @flowKeys;
+
+
+
+print_header();
+
+my $Kstat_old;
+my $counter = 1;
+
+
+################ MAIN LOOP ##########################
+while(1) {
+  my $Kstat = Sun::Solaris::Kstat->new();
+
+  foreach my $link (@linkKeys_sorted) {
+        if ($counter == 1 ) { $interval = $Kstat->{unix}{0}{system_misc}{lbolt}; } 
+ 
+        my $ibyte =  ($Kstat->{link}{0}{${link}}{rbytes64}   - $Kstat_old->{link}{0}{${link}}{rbytes64})   / $interval;
+        my $imbs  =  ($ibyte * 8) / 1000000;
+        my $obyte =  ($Kstat->{link}{0}{${link}}{obytes64}   - $Kstat_old->{link}{0}{${link}}{obytes64})   / $interval;
+        my $ombs  =  ($obyte * 8) / 1000000;
+        my $ipkts =  ($Kstat->{link}{0}{${link}}{ipackets} - $Kstat_old->{link}{0}{${link}}{ipackets}) / $interval;
+        my $opkts =  ($Kstat->{link}{0}{${link}}{opackets} - $Kstat_old->{link}{0}{${link}}{opackets}) / $interval;
+        my $ierrs =  ($Kstat->{link}{0}{${link}}{ierrors}  - $Kstat_old->{link}{0}{${link}}{ierrors})  / $interval;
+        my $oerrs =  ($Kstat->{link}{0}{${link}}{oerrors}  - $Kstat_old->{link}{0}{${link}}{oerrors}) / $interval;
+        
+        printf("%25s L %9.3f %9.3f %12d %12d %12d %12d |\n", $link, $imbs, $ombs, $ipkts, $opkts, $ierrs, $oerrs);
+	$interval = 1; 
+  }
+
+  foreach my $flow (@flowKeys_sorted) {
+        if ($counter == 1 ) { $interval = $Kstat->{unix}{0}{system_misc}{lbolt}; } 
+
+	my $ibyte =  ($Kstat->{unix}{0}{${flow}}{rbytes}   - $Kstat_old->{unix}{0}{${flow}}{rbytes})   / $interval;
+	my $imbs  =  ($ibyte * 8) / 1000000;
+	my $obyte =  ($Kstat->{unix}{0}{${flow}}{obytes}   - $Kstat_old->{unix}{0}{${flow}}{obytes})   / $interval;
+	my $ombs  =  ($obyte * 8) / 1000000;
+	my $ipkts =  ($Kstat->{unix}{0}{${flow}}{ipackets} - $Kstat_old->{unix}{0}{${flow}}{ipackets}) / $interval;
+ 	my $opkts =  ($Kstat->{unix}{0}{${flow}}{opackets} - $Kstat_old->{unix}{0}{${flow}}{opackets}) / $interval;
+	my $ierrs =  ($Kstat->{unix}{0}{${flow}}{ierrors}  - $Kstat_old->{unix}{0}{${flow}}{ierrors})  / $interval;
+ 	my $oerrs =  ($Kstat->{unix}{0}{${flow}}{oerrors}  - $Kstat_old->{unix}{0}{${flow}}{oerrors}) / $interval;
+        
+        printf("%25s F %9.3f %9.3f %12d %12d %12d %12d |\n", $flow, $imbs, $ombs, $ipkts, $opkts, $ierrs, $oerrs);
+	$interval = 1; 
+  }
+
+
+
+
+ 
+
+	
+        sleep($interval);
+	print("\n");
+        print_header() unless ($counter == 1);
+        $counter++;
+        $Kstat_old = $Kstat;    # Rename Kstat object for diff next time through the loop.
+}
+
+exit(0);
+
+
+
+
+
+################ SUBS ###################################
+
+sub print_header()
+{
+	printf("%25s | %9s %9s %12s %12s %12s %12s |\n", "Flow Name", "MBits In", "MBits Out", "Packets In", "Packets Out", "Errors In", "Errors Out");
+
+}

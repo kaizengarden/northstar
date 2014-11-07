@@ -1,0 +1,71 @@
+#!/bin/bash
+
+#
+# NORTHSTAR DATA LOADER		benr@joyent.com
+# 
+# This script is a wrapper to poke the RRD Data collection scripts
+#  in a more orderly manner than running each from cron individually:
+
+
+#  G L O B A L Z O N E     D A T A    C O L L E C T I O N 
+#
+# gzCPU-rrd.pl:   Graphs CPU Usage in %; generates cpu.png (cpu.rrd)
+# gzDISK-rrd.pl:  Graphs per disk IO stats for ZPOOLs; generates disk-${disk}.png (disk-${disk}.rrd)
+# gzLOAD-rrd.pl:  Graphs system load (1,5,15 min); generates load.png (load.rrd)
+# gzMEM-rrd.pl:   Graphs system memory split; generates mem.png (memory.rrd) 
+# gzNET-rrd.pl    Graph MAC layer throughput; generates net.png (network.rrd)
+# gzPROCS-rrd.pl: Graphs number of processes (nproc); generates procs.png (procs.rrd) 
+# gzSWAP-rrd.pl:    <-- IN DEV
+# gzVM-rrd.pl:    Graphs VM free (in progress); generates vmem.png (vmem.rrd)
+# gzZFS-rrd.pl:   Graphs ZFS Logical (VFS) throughput; generates zfs-rw.png (zfs-rw.rrd)
+#
+#  P E R    Z O N E       D A T A    C O L L E C T I O N
+#
+# zoneCAPS-rrd.pl
+# zoneIO-rrd.pl
+
+LOADERS=" \
+/opt/jtk/data/zoneIO-rrd.pl \
+/opt/jtk/data/zoneCAPS-rrd.pl \
+/opt/jtk/data/smartos_net.pl \
+/opt/jtk/data/gzLOAD-rrd.pl \
+/opt/jtk/data/gzCPU-rrd.pl \
+/opt/jtk/data/gzZFS-rrd.pl \
+/opt/jtk/data/gzDISK-rrd.pl \
+/opt/jtk/data/gzNET-rrd.pl \
+/opt/jtk/data/gzMEM-rrd.pl \
+/opt/jtk/data/gzVM-rrd.pl \
+/opt/jtk/data/gzPROCS-rrd.pl \
+/opt/jtk/data/zoneRollups.pl
+"
+
+
+
+
+
+
+
+# Do the run:
+
+for l in $LOADERS
+do
+ #echo "Running $l..."
+ $l 2&>/dev/null
+done
+
+
+
+VERSION=`/usr/bin/uname -v`
+
+if [ $VERSION == "snv_121" ]
+then
+  /opt/jtk/data/flows-rrd.pl
+
+ # Run autoflow, but only on the top of the hour.
+ TIME=`/usr/bin/date +%M`
+
+ if [ $TIME == 00 ]
+ then
+  /opt/jtk/bin/autoflow | /bin/logger -p user.err -t northstar
+ fi
+fi

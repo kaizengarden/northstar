@@ -1,0 +1,19 @@
+  Welcome to       __   __           __              
+.-----.-----.----.|  |_|  |--.-----.|  |_.---.-.----.
+|     |  _  |   _||   _|     |__ --||   _|  _  |   _|
+|__|__|_____|__|  |____|__|__|_____||____|___._|__|  
+                                                     
+
+Written by Ben Rockwood - benr@joyent.com
+
+
+Northstar is a metrics gathering and reporting framework.  
+It is devided into two componants:
+
+1) The 'northstar' application which pulls data from 
+   ZFS, Solaris kstats, Solaris rcapd, ipmitool and other 
+   system utilities to create static HTML to STDOUT.
+
+2) A series of scripts which create, update, and generate
+   RRD graphs which are referenced by northstar's HTML
+   for trending analysis of its point-in-time data.
